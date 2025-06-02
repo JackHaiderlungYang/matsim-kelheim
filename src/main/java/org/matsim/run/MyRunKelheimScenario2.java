@@ -44,6 +44,8 @@ import org.matsim.contrib.dvrp.run.DvrpConfigGroup;
 import org.matsim.contrib.dvrp.run.DvrpModule;
 import org.matsim.contrib.dvrp.run.DvrpQSimComponents;
 import org.matsim.contrib.dvrp.trafficmonitoring.DvrpModeLimitedMaxSpeedTravelTimeModule;
+import org.matsim.contrib.vsp.pt.fare.DistanceBasedPtFareParams;
+import org.matsim.contrib.vsp.pt.fare.PtFareConfigGroup;
 import org.matsim.contrib.vsp.pt.fare.PtFareModule;
 import org.matsim.contrib.vsp.scenario.SnzActivities;
 import org.matsim.core.api.experimental.events.EventsManager;
@@ -53,20 +55,19 @@ import org.matsim.core.config.groups.RoutingConfigGroup;
 import org.matsim.core.config.groups.VspExperimentalConfigGroup;
 import org.matsim.core.controler.AbstractModule;
 import org.matsim.core.controler.Controler;
+import org.matsim.core.controler.OutputDirectoryHierarchy;
 import org.matsim.core.network.NetworkUtils;
 import org.matsim.core.router.AnalysisMainModeIdentifier;
 import org.matsim.core.scoring.functions.ScoringParametersForPerson;
 import org.matsim.drtFare.KelheimDrtFareModule;
 import org.matsim.extensions.pt.routing.ptRoutingModes.PtIntermodalRoutingModesConfigGroup;
+import org.matsim.rebalancing.WaitingPointsBasedRebalancingModule;
 import org.matsim.run.prepare.PrepareNetwork;
 import org.matsim.run.prepare.PreparePopulation;
-import org.matsim.rebalancing.WaitingPointsBasedRebalancingModule;
 import org.matsim.simwrapper.SimWrapperConfigGroup;
 import org.matsim.simwrapper.SimWrapperModule;
 import org.matsim.vehicles.VehicleType;
 import picocli.CommandLine;
-import org.matsim.contrib.vsp.pt.fare.DistanceBasedPtFareParams;
-import org.matsim.contrib.vsp.pt.fare.PtFareConfigGroup;
 import playground.vsp.scoring.IncomeDependentUtilityOfMoneyPersonScoringParameters;
 
 import javax.annotation.Nullable;
@@ -74,7 +75,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.SplittableRandom;
 
-@CommandLine.Command(header = ":: Open Kelheim Scenario ::", version = RunKelheimScenario.VERSION, mixinStandardHelpOptions = true)
+@CommandLine.Command(header = ":: Open Kelheim Scenario ::", version = MyRunKelheimScenario2.VERSION, mixinStandardHelpOptions = true)
 @MATSimApplication.Prepare({
 	CreateNetworkFromSumo.class, CreateTransitScheduleFromGtfs.class, TrajectoryToPlans.class, GenerateShortDistanceTrips.class,
 	MergePopulations.class, ExtractRelevantFreightTrips.class, DownSamplePopulation.class, PrepareNetwork.class, ExtractHomeCoordinates.class,
@@ -83,7 +84,7 @@ import java.util.SplittableRandom;
 @MATSimApplication.Analysis({
 	LinkStats.class, CheckPopulation.class, DrtServiceQualityAnalysis.class, DrtVehiclesRoadUsageAnalysis.class
 })
-public class RunKelheimScenario extends MATSimApplication {
+public class MyRunKelheimScenario2 extends MATSimApplication {
 
 	public static final String VERSION = "3.1";
 	private static final double WEIGHT_1_PASSENGER = 22235.;
@@ -134,16 +135,16 @@ public class RunKelheimScenario extends MATSimApplication {
 	private String waitingPointsPath;
 
 
-	public RunKelheimScenario(@Nullable Config config) {
+	public MyRunKelheimScenario2(@Nullable Config config) {
 		super(config);
 	}
 
-	public RunKelheimScenario() {
+	public MyRunKelheimScenario2() {
 		super(String.format("input/v%s/kelheim-v%s-config.xml", VERSION, VERSION));
 	}
 
 	public static void main(String[] args) {
-		MATSimApplication.run(RunKelheimScenario.class, args);
+		MATSimApplication.run(MyRunKelheimScenario2.class, args);
 	}
 
 	public static void addDrtCompanionParameters(DrtWithExtensionsConfigGroup drtWithExtensionsConfigGroup) {
@@ -166,6 +167,7 @@ public class RunKelheimScenario extends MATSimApplication {
 	protected Config prepareConfig(Config config) {
 
 		SnzActivities.addScoringParams(config);
+		config.controller().setOverwriteFileSetting(OutputDirectoryHierarchy.OverwriteFileSetting.deleteDirectoryIfExists);
 
 		config.controller().setOutputDirectory(sample.adjustName(config.controller().getOutputDirectory()));
 		config.plans().setInputFile(sample.adjustName(config.plans().getInputFile()));
@@ -286,7 +288,6 @@ public class RunKelheimScenario extends MATSimApplication {
 			}
 		}
 		addNetworkModification(scenario.getNetwork());
-		addHighwayToTheNetwork(scenario.getNetwork());
 
 	}
 
@@ -390,41 +391,25 @@ public class RunKelheimScenario extends MATSimApplication {
 	private void addNetworkModification(Network network) {
 		for (Link link : network.getLinks().values()) {
 			if (link.getAllowedModes().contains(TransportMode.car)) {
-				link.setFreespeed(10.0);
+				{
+					String type = (String) link.getAttributes().getAttribute("type");
+					double originalSpeed = link.getFreespeed();
+
+					if ("motorway".equals(type)) {
+						link.setFreespeed(180.0 / 3.6);
+					} else if ("primary".equals(type)) {
+						if (originalSpeed < 70.0 / 3.6) {
+							link.setFreespeed(70.0 / 3.6);
+						} else if (originalSpeed < 100.0 / 3.6) {
+							link.setFreespeed(100.0 / 3.6);
+						}
+					} else if ("secondary".equals(type)) {
+						if (originalSpeed < 50.0 / 3.6) {
+							link.setFreespeed(50.0 / 3.6);
+						}
+					}
+				}
 			}
 		}
-	}
-
-	private void addHighwayToTheNetwork(Network network0) {
-		Node fromNode = network0.getNodes().get(Id.createNodeId(29999218));
-		Node toNode = network0.getNodes().get(Id.createNodeId(370357925));
-
-		Id<Link> linkIdMyNewHighway = Id.createLinkId("myNewHighway");
-		double lengthOfMyNewHighway = NetworkUtils.getEuclideanDistance(fromNode.getCoord(), toNode.getCoord());
-		double freeSpeedOfMyNewHighway = 120.0 / 3.6;
-		double capacity = 2000;
-		double numberOFMyNewHighways = 1.0;
-
-		Link myNewLink = NetworkUtils.createLink(linkIdMyNewHighway,
-			fromNode,
-			toNode,
-			network0,
-			lengthOfMyNewHighway,
-			freeSpeedOfMyNewHighway,
-			capacity,
-			numberOFMyNewHighways);
-
-		network0.addLink(myNewLink);
-
-		Link myNewLinkReverseLink = NetworkUtils.createLink(Id.createLinkId("myNewHighwayReverseDirection"),
-			toNode,
-			fromNode,
-			network0,
-			lengthOfMyNewHighway,
-			freeSpeedOfMyNewHighway,
-			capacity,
-			numberOFMyNewHighways);
-		network0.addLink(myNewLinkReverseLink);
-
 	}
 }
